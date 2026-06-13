@@ -1,0 +1,38 @@
+.git/
+.github/
+.agents/
+.codex/
+
+# Local secrets and runtime arguments
+.env
+.env.*
+args
+args.local
+
+# Local caches and reference material
+.cache/
+.pytest_cache/
+__pycache__/
+.venv/
+venv/
+env/
+API-Reference-Documentation/
+
+# Go build and test artifacts
+/kimi-compatible
+*.test
+*.out
+coverage.*
+/bin/
+/build/
+/dist/
+/tmp/
+**/*_test.go
+
+# Repo-only files not needed by the image build
+README.md
+LICENSE
+args.example
+*.log
+.DS_Store
+Thumbs.db

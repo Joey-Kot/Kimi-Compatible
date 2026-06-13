@@ -1,0 +1,35 @@
+# Local secrets and runtime arguments
+.env
+.env.*
+args
+args.local
+
+# Go build and test artifacts
+/deepseek-compatible
+/deepseek-responses-compatible
+*.test
+*.out
+coverage.*
+/bin/
+/build/
+/dist/
+/tmp/
+
+# Local caches and virtual environments
+.cache/
+.pytest_cache/
+__pycache__/
+.venv/
+venv/
+env/
+
+# Local reference material
+API-Reference-Documentation/
+
+# Logs and OS/editor noise
+*.log
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

@@ -1,0 +1,14 @@
+--listen :8080
+--api-token sk-local-test
+--kimi-api-key sk-your-kimi-key
+--kimi-base-url https://api.moonshot.cn/v1
+--kimi-model kimi-k2.6
+--kimi-models kimi-k2.6,kimi-k2.5
+--kimi-http-timeout 120
+--kimi-max-idle-conns 200
+--kimi-max-idle-conns-per-host 100
+--kimi-max-conns-per-host 0
+--read-header-timeout 10
+--idle-timeout 120
+--verify-ssl=true
+--debug-log-body=false
