@@ -135,9 +135,9 @@ func (a Adapter) NormalizeInputItems(value any) ([]shared.Map, error) {
 		case "message":
 			items = append(items, NormalizeMessageItem(item))
 		case "function_call_output":
-			items = append(items, NormalizeFunctionCallOutput(item, "function_call_output"))
+			items = append(items, a.NormalizeFunctionCallOutput(item, "function_call_output"))
 		case "custom_tool_call_output":
-			items = append(items, NormalizeFunctionCallOutput(item, "custom_tool_call_output"))
+			items = append(items, a.NormalizeFunctionCallOutput(item, "custom_tool_call_output"))
 		case "function_call":
 			items = append(items, NormalizeFunctionCall(item, "function_call"))
 		case "custom_tool_call":
@@ -154,6 +154,25 @@ func (a Adapter) NormalizeInputItems(value any) ([]shared.Map, error) {
 		}
 	}
 	return items, nil
+}
+
+func (a Adapter) NormalizeFunctionCallOutput(item map[string]any, typ string) shared.Map {
+	normalized := NormalizeFunctionCallOutput(item, typ)
+	if a.Store == nil {
+		return normalized
+	}
+	refID := shared.StringValue(normalized["call_id"])
+	if refID == "" {
+		return normalized
+	}
+	ref, ok := a.Store.Item(refID)
+	if !ok || !IsToolCallItem(ref) {
+		return normalized
+	}
+	if callID := shared.StringValue(ref["call_id"]); callID != "" {
+		normalized["call_id"] = callID
+	}
+	return normalized
 }
 
 func NormalizeMessageItem(item map[string]any) shared.Map {
@@ -271,13 +290,55 @@ func InputItemsToChatMessages(items []shared.Map) []shared.Map {
 				}
 				calls = append(calls, candidate)
 			}
-			messages = append(messages, AssistantToolCallMessage(calls, ""))
-			i = j - 1
+			content, reasoning, next := assistantContextAfterToolCalls(items, j)
+			messages = append(messages, AssistantToolCallMessage(calls, content, reasoning))
+			i = next - 1
 		case itemType == "function_call_output" || itemType == "custom_tool_call_output":
 			messages = append(messages, shared.Map{"role": "tool", "tool_call_id": item["call_id"], "content": shared.ContentToText(item["output"], false)})
 		}
 	}
 	return messages
+}
+
+func assistantContextAfterToolCalls(items []shared.Map, start int) (string, string, int) {
+	contentParts := []string{}
+	reasoningParts := []string{}
+	i := start
+	for ; i < len(items); i++ {
+		item := items[i]
+		itemType := shared.StringValue(item["type"])
+		if itemType == "" {
+			itemType = "message"
+		}
+		if itemType == "function_call_output" || itemType == "custom_tool_call_output" {
+			break
+		}
+		if itemType != "message" || shared.StringValue(item["role"]) != "assistant" {
+			break
+		}
+		text := shared.ContentToText(item["content"], true)
+		reasoning, content := splitThinkContent(text)
+		if upstreamReasoning := shared.StringValue(item["_upstream_reasoning_content"]); upstreamReasoning != "" {
+			reasoningParts = append(reasoningParts, upstreamReasoning)
+		}
+		if reasoning != "" {
+			reasoningParts = append(reasoningParts, reasoning)
+		}
+		if content != "" {
+			contentParts = append(contentParts, content)
+		}
+	}
+	return strings.Join(contentParts, "\n\n"), strings.Join(reasoningParts, "\n\n"), i
+}
+
+func splitThinkContent(text string) (string, string) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "<think>") || !strings.HasSuffix(trimmed, "</think>") {
+		return "", text
+	}
+	inner := strings.TrimPrefix(trimmed, "<think>")
+	inner = strings.TrimSuffix(inner, "</think>")
+	return strings.TrimSpace(inner), ""
 }
 
 func ResponseMessageToChatMessage(item shared.Map) shared.Map {

@@ -169,3 +169,73 @@ func TestReasoningIsPreservedForToolCallContext(t *testing.T) {
 		t.Fatalf("tool calls len = %d", len(calls))
 	}
 }
+
+func TestToolCallOutputCallIDCanReferenceResponseItemID(t *testing.T) {
+	store := state.New()
+	store.RegisterItems([]map[string]any{{
+		"id":        "fc_local",
+		"type":      "function_call",
+		"call_id":   "firecrawl-web-search_0",
+		"name":      "firecrawl-web-search",
+		"status":    "completed",
+		"arguments": "{}",
+	}})
+	adapter := Adapter{Store: store}
+
+	items, err := adapter.NormalizeInputItems([]any{map[string]any{
+		"type":    "function_call_output",
+		"call_id": "fc_local",
+		"output":  "ok",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := items[0]["call_id"]; got != "firecrawl-web-search_0" {
+		t.Fatalf("call_id = %v", got)
+	}
+}
+
+func TestAssistantThinkMessageBetweenToolCallAndOutputIsMerged(t *testing.T) {
+	items := []map[string]any{
+		{
+			"id":        "fc_local",
+			"type":      "function_call",
+			"call_id":   "firecrawl-web-search_0",
+			"name":      "firecrawl-web-search",
+			"status":    "completed",
+			"arguments": "{\"query\":\"SpaceX\"}",
+		},
+		{
+			"type":    "message",
+			"role":    "assistant",
+			"content": []any{map[string]any{"type": "output_text", "text": "<think>I need to search.</think>"}},
+		},
+		{
+			"type":    "function_call_output",
+			"call_id": "firecrawl-web-search_0",
+			"output":  "{\"success\":true}",
+		},
+	}
+
+	messages := InputItemsToChatMessages(items)
+	if len(messages) != 2 {
+		t.Fatalf("messages len = %d: %#v", len(messages), messages)
+	}
+	if got := messages[0]["role"]; got != "assistant" {
+		t.Fatalf("first role = %v", got)
+	}
+	if got := messages[0]["reasoning_content"]; got != "I need to search." {
+		t.Fatalf("reasoning_content = %v", got)
+	}
+	calls := messages[0]["tool_calls"].([]any)
+	call := calls[0].(map[string]any)
+	if got := call["id"]; got != "firecrawl-web-search_0" {
+		t.Fatalf("tool call id = %v", got)
+	}
+	if got := messages[1]["role"]; got != "tool" {
+		t.Fatalf("second role = %v", got)
+	}
+	if got := messages[1]["tool_call_id"]; got != "firecrawl-web-search_0" {
+		t.Fatalf("tool_call_id = %v", got)
+	}
+}
