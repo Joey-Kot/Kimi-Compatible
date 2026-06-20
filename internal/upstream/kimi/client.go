@@ -173,6 +173,12 @@ func (c *Client) EstimateTokens(ctx context.Context, payload shared.Map) (shared
 	return data, nil
 }
 
+func (c *Client) CloseIdleConnections() {
+	if c.HTTPClient != nil {
+		c.HTTPClient.CloseIdleConnections()
+	}
+}
+
 func (c *Client) newPostRequest(ctx context.Context, url string, payload shared.Map) (*http.Request, error) {
 	if c.APIKey == "" {
 		return nil, HTTPError{StatusCode: http.StatusInternalServerError, Message: "Kimi API key is not configured"}

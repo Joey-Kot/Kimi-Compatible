@@ -20,7 +20,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/pprof"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -107,6 +109,10 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		openAIError(w, http.StatusNotFound, "not found", "invalid_request_error", "")
 	case r.Method == http.MethodGet && path == "/v1/models":
 		s.handleModels(w, r)
+	case r.Method == http.MethodGet && path == "/healthz/memory":
+		s.handleMemoryHealth(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/debug/"):
+		s.handleDebug(w, r, path)
 	case path == "/v1/chat/completions":
 		s.handleChatCompletions(w, r)
 	case strings.HasPrefix(path, "/v1/chat/completions/"):
@@ -251,6 +257,46 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 		data = append(data, shared.Map{"id": model, "object": "model", "owned_by": "moonshot"})
 	}
 	writeJSON(w, http.StatusOK, shared.Map{"object": "list", "data": data})
+}
+
+func (s *Server) handleMemoryHealth(w http.ResponseWriter, _ *http.Request) {
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	writeJSON(w, http.StatusOK, shared.Map{
+		"alloc":      mem.Alloc,
+		"sys":        mem.Sys,
+		"num_gc":     mem.NumGC,
+		"goroutines": runtime.NumGoroutine(),
+		"store":      s.store.Stats(),
+	})
+}
+
+func (s *Server) handleDebug(w http.ResponseWriter, r *http.Request, path string) {
+	if !s.cfg.DebugPprof {
+		openAIError(w, http.StatusNotFound, "not found", "invalid_request_error", "")
+		return
+	}
+	switch path {
+	case "/debug/vars":
+		s.handleMemoryHealth(w, r)
+	case "/debug/pprof":
+		pprof.Index(w, r)
+	case "/debug/pprof/cmdline":
+		pprof.Cmdline(w, r)
+	case "/debug/pprof/profile":
+		pprof.Profile(w, r)
+	case "/debug/pprof/symbol":
+		pprof.Symbol(w, r)
+	case "/debug/pprof/trace":
+		pprof.Trace(w, r)
+	default:
+		name := strings.TrimPrefix(path, "/debug/pprof/")
+		if name == "" || strings.Contains(name, "/") {
+			openAIError(w, http.StatusNotFound, "not found", "invalid_request_error", "")
+			return
+		}
+		pprof.Handler(name).ServeHTTP(w, r)
+	}
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -653,7 +699,9 @@ func (s *Server) streamAnthropicMessage(w http.ResponseWriter, r *http.Request, 
 	setSSEHeaders(w)
 	flusher, _ := w.(http.Flusher)
 	messageID := shared.NewID("msg")
-	_ = sse.Event(w, "message_start", anthropic.StreamStart(messageID, payload, s.cfg.DefaultModel))
+	if err := writeSSEEvent(w, "message_start", anthropic.StreamStart(messageID, payload, s.cfg.DefaultModel)); err != nil {
+		return
+	}
 	if flusher != nil {
 		flusher.Flush()
 	}
@@ -683,18 +731,26 @@ func (s *Server) streamAnthropicMessage(w http.ResponseWriter, r *http.Request, 
 			if !thinkingStarted {
 				thinkingStarted = true
 				textIndex = 1
-				_ = sse.Event(w, "content_block_start", shared.Map{"type": "content_block_start", "index": 0, "content_block": shared.Map{"type": "thinking", "thinking": "", "signature": ""}})
+				if err := writeSSEEvent(w, "content_block_start", shared.Map{"type": "content_block_start", "index": 0, "content_block": shared.Map{"type": "thinking", "thinking": "", "signature": ""}}); err != nil {
+					return err
+				}
 			}
-			_ = sse.Event(w, "content_block_delta", anthropic.ThinkingDelta(reasoning))
+			if err := writeSSEEvent(w, "content_block_delta", anthropic.ThinkingDelta(reasoning)); err != nil {
+				return err
+			}
 		}
 		if text := shared.StringValue(delta["content"]); text != "" {
 			if !textStarted {
 				textStarted = true
-				_ = sse.Event(w, "content_block_start", shared.Map{"type": "content_block_start", "index": textIndex, "content_block": shared.Map{"type": "text", "text": ""}})
+				if err := writeSSEEvent(w, "content_block_start", shared.Map{"type": "content_block_start", "index": textIndex, "content_block": shared.Map{"type": "text", "text": ""}}); err != nil {
+					return err
+				}
 			}
 			event := anthropic.TextDelta(text)
 			event["index"] = textIndex
-			_ = sse.Event(w, "content_block_delta", event)
+			if err := writeSSEEvent(w, "content_block_delta", event); err != nil {
+				return err
+			}
 		}
 		if rawCalls, ok := delta["tool_calls"].([]any); ok {
 			stopReason = "tool_use"
@@ -718,14 +774,14 @@ func (s *Server) streamAnthropicMessage(w http.ResponseWriter, r *http.Request, 
 		return nil
 	})
 	if err != nil {
-		_ = sse.Event(w, "error", errorPayload(err.Error(), errorTypeForStatus(statusFromError(err))))
+		_ = writeSSEEvent(w, "error", errorPayload(err.Error(), errorTypeForStatus(statusFromError(err))))
 		return
 	}
 	if thinkingStarted {
-		_ = sse.Event(w, "content_block_stop", shared.Map{"type": "content_block_stop", "index": 0})
+		_ = writeSSEEvent(w, "content_block_stop", shared.Map{"type": "content_block_stop", "index": 0})
 	}
 	if textStarted {
-		_ = sse.Event(w, "content_block_stop", shared.Map{"type": "content_block_stop", "index": textIndex})
+		_ = writeSSEEvent(w, "content_block_stop", shared.Map{"type": "content_block_stop", "index": textIndex})
 	}
 	nextIndex := 0
 	if thinkingStarted {
@@ -740,12 +796,12 @@ func (s *Server) streamAnthropicMessage(w http.ResponseWriter, r *http.Request, 
 			continue
 		}
 		block := anthropic.ContentBlocksFromMessage(map[string]any{"tool_calls": []any{call}})[0]
-		_ = sse.Event(w, "content_block_start", shared.Map{"type": "content_block_start", "index": nextIndex, "content_block": block})
-		_ = sse.Event(w, "content_block_stop", shared.Map{"type": "content_block_stop", "index": nextIndex})
+		_ = writeSSEEvent(w, "content_block_start", shared.Map{"type": "content_block_start", "index": nextIndex, "content_block": block})
+		_ = writeSSEEvent(w, "content_block_stop", shared.Map{"type": "content_block_stop", "index": nextIndex})
 		nextIndex++
 	}
-	_ = sse.Event(w, "message_delta", anthropic.MessageDelta(stopReason, usage))
-	_ = sse.Event(w, "message_stop", shared.Map{"type": "message_stop"})
+	_ = writeSSEEvent(w, "message_delta", anthropic.MessageDelta(stopReason, usage))
+	_ = writeSSEEvent(w, "message_stop", shared.Map{"type": "message_stop"})
 	if flusher != nil {
 		flusher.Flush()
 	}
@@ -776,8 +832,12 @@ func (s *Server) streamResponse(w http.ResponseWriter, r *http.Request, payload 
 	messageID := shared.NewID("msg")
 	createdAt := shared.NowSeconds()
 	shell := s.responses.BaseResponse(payload, responseID, createdAt, "in_progress", nil, "", nil, nil)
-	_ = sse.Event(w, "response.created", shared.Map{"type": "response.created", "response": shell})
-	_ = sse.Event(w, "response.in_progress", shared.Map{"type": "response.in_progress", "response": shell})
+	if err := writeSSEEvent(w, "response.created", shared.Map{"type": "response.created", "response": shell}); err != nil {
+		return
+	}
+	if err := writeSSEEvent(w, "response.in_progress", shared.Map{"type": "response.in_progress", "response": shell}); err != nil {
+		return
+	}
 	if flusher != nil {
 		flusher.Flush()
 	}
@@ -823,12 +883,18 @@ func (s *Server) streamResponse(w http.ResponseWriter, r *http.Request, payload 
 					textOutputIndex = 1
 				}
 				item := responses.ReasoningSummaryItem("", reasoningID, "in_progress")
-				_ = sse.Event(w, "response.output_item.added", shared.Map{"type": "response.output_item.added", "output_index": reasoningOutputIndex, "item": item})
+				if err := writeSSEEvent(w, "response.output_item.added", shared.Map{"type": "response.output_item.added", "output_index": reasoningOutputIndex, "item": item}); err != nil {
+					return err
+				}
 				part := shared.Map{"type": "summary_text", "text": ""}
-				_ = sse.Event(w, "response.reasoning_summary_part.added", shared.Map{"type": "response.reasoning_summary_part.added", "item_id": reasoningID, "output_index": reasoningOutputIndex, "summary_index": 0, "part": part})
+				if err := writeSSEEvent(w, "response.reasoning_summary_part.added", shared.Map{"type": "response.reasoning_summary_part.added", "item_id": reasoningID, "output_index": reasoningOutputIndex, "summary_index": 0, "part": part}); err != nil {
+					return err
+				}
+			}
+			if err := writeSSEEvent(w, "response.reasoning_summary_text.delta", shared.Map{"type": "response.reasoning_summary_text.delta", "item_id": reasoningID, "output_index": reasoningOutputIndex, "summary_index": 0, "delta": dr}); err != nil {
+				return err
 			}
 			reasoning += dr
-			_ = sse.Event(w, "response.reasoning_summary_text.delta", shared.Map{"type": "response.reasoning_summary_text.delta", "item_id": reasoningID, "output_index": reasoningOutputIndex, "summary_index": 0, "delta": dr})
 		}
 		if dt := shared.StringValue(delta["content"]); dt != "" {
 			if !textStarted {
@@ -837,12 +903,18 @@ func (s *Server) streamResponse(w http.ResponseWriter, r *http.Request, payload 
 					textOutputIndex = 1
 				}
 				item := shared.Map{"id": messageID, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}}
-				_ = sse.Event(w, "response.output_item.added", shared.Map{"type": "response.output_item.added", "output_index": textOutputIndex, "item": item})
+				if err := writeSSEEvent(w, "response.output_item.added", shared.Map{"type": "response.output_item.added", "output_index": textOutputIndex, "item": item}); err != nil {
+					return err
+				}
 				part := shared.Map{"type": "output_text", "text": "", "annotations": []any{}}
-				_ = sse.Event(w, "response.content_part.added", shared.Map{"type": "response.content_part.added", "item_id": messageID, "output_index": textOutputIndex, "content_index": 0, "part": part})
+				if err := writeSSEEvent(w, "response.content_part.added", shared.Map{"type": "response.content_part.added", "item_id": messageID, "output_index": textOutputIndex, "content_index": 0, "part": part}); err != nil {
+					return err
+				}
+			}
+			if err := writeSSEEvent(w, "response.output_text.delta", shared.Map{"type": "response.output_text.delta", "item_id": messageID, "output_index": textOutputIndex, "content_index": 0, "delta": dt}); err != nil {
+				return err
 			}
 			content += dt
-			_ = sse.Event(w, "response.output_text.delta", shared.Map{"type": "response.output_text.delta", "item_id": messageID, "output_index": textOutputIndex, "content_index": 0, "delta": dt})
 			if flusher != nil {
 				flusher.Flush()
 			}
@@ -867,7 +939,7 @@ func (s *Server) streamResponse(w http.ResponseWriter, r *http.Request, payload 
 	if err != nil {
 		failed := s.responses.BaseResponse(payload, responseID, createdAt, "failed", nil, "", usage, nil)
 		failed["error"] = shared.Map{"code": "server_error", "message": err.Error()}
-		_ = sse.Event(w, "response.failed", shared.Map{"type": "response.failed", "response": failed})
+		_ = writeSSEEvent(w, "response.failed", shared.Map{"type": "response.failed", "response": failed})
 		return
 	}
 
@@ -877,9 +949,9 @@ func (s *Server) streamResponse(w http.ResponseWriter, r *http.Request, payload 
 	var messageItem shared.Map
 	if reasoningStarted {
 		reasoningItem = responses.ReasoningSummaryItem(reasoning, reasoningID)
-		_ = sse.Event(w, "response.reasoning_summary_text.done", shared.Map{"type": "response.reasoning_summary_text.done", "item_id": reasoningID, "output_index": reasoningOutputIndex, "summary_index": 0, "text": reasoning})
-		_ = sse.Event(w, "response.reasoning_summary_part.done", shared.Map{"type": "response.reasoning_summary_part.done", "item_id": reasoningID, "output_index": reasoningOutputIndex, "summary_index": 0, "part": shared.Map{"type": "summary_text", "text": reasoning}})
-		_ = sse.Event(w, "response.output_item.done", shared.Map{"type": "response.output_item.done", "output_index": reasoningOutputIndex, "item": shared.PublicItem(reasoningItem)})
+		_ = writeSSEEvent(w, "response.reasoning_summary_text.done", shared.Map{"type": "response.reasoning_summary_text.done", "item_id": reasoningID, "output_index": reasoningOutputIndex, "summary_index": 0, "text": reasoning})
+		_ = writeSSEEvent(w, "response.reasoning_summary_part.done", shared.Map{"type": "response.reasoning_summary_part.done", "item_id": reasoningID, "output_index": reasoningOutputIndex, "summary_index": 0, "part": shared.Map{"type": "summary_text", "text": reasoning}})
+		_ = writeSSEEvent(w, "response.output_item.done", shared.Map{"type": "response.output_item.done", "output_index": reasoningOutputIndex, "item": shared.PublicItem(reasoningItem)})
 	}
 	if textStarted {
 		messageItem = responses.OutputMessageItem(content, messageID)
@@ -889,9 +961,9 @@ func (s *Server) streamResponse(w http.ResponseWriter, r *http.Request, payload 
 		if reasoning != "" {
 			messageItem["_upstream_reasoning_content"] = reasoning
 		}
-		_ = sse.Event(w, "response.output_text.done", shared.Map{"type": "response.output_text.done", "item_id": messageID, "output_index": textOutputIndex, "content_index": 0, "text": content})
-		_ = sse.Event(w, "response.content_part.done", shared.Map{"type": "response.content_part.done", "item_id": messageID, "output_index": textOutputIndex, "content_index": 0, "part": shared.Map{"type": "output_text", "text": content, "annotations": []any{}}})
-		_ = sse.Event(w, "response.output_item.done", shared.Map{"type": "response.output_item.done", "output_index": textOutputIndex, "item": shared.PublicItem(messageItem)})
+		_ = writeSSEEvent(w, "response.output_text.done", shared.Map{"type": "response.output_text.done", "item_id": messageID, "output_index": textOutputIndex, "content_index": 0, "text": content})
+		_ = writeSSEEvent(w, "response.content_part.done", shared.Map{"type": "response.content_part.done", "item_id": messageID, "output_index": textOutputIndex, "content_index": 0, "part": shared.Map{"type": "output_text", "text": content, "annotations": []any{}}})
+		_ = writeSSEEvent(w, "response.output_item.done", shared.Map{"type": "response.output_item.done", "output_index": textOutputIndex, "item": shared.PublicItem(messageItem)})
 	}
 	if reasoningStarted && (!textStarted || reasoningOutputIndex < textOutputIndex) {
 		outputItems = append(outputItems, reasoningItem)
@@ -926,14 +998,14 @@ func (s *Server) streamResponse(w http.ResponseWriter, r *http.Request, payload 
 		}
 		item := responses.UpstreamToolCallToResponseItem(call, toolNameMap, callReasoning, turnID)
 		outputItems = append(outputItems, item)
-		_ = sse.Event(w, "response.output_item.added", shared.Map{"type": "response.output_item.added", "output_index": outputIndex, "item": shared.PublicItem(item)})
-		_ = sse.Event(w, "response.output_item.done", shared.Map{"type": "response.output_item.done", "output_index": outputIndex, "item": shared.PublicItem(item)})
+		_ = writeSSEEvent(w, "response.output_item.added", shared.Map{"type": "response.output_item.added", "output_index": outputIndex, "item": shared.PublicItem(item)})
+		_ = writeSSEEvent(w, "response.output_item.done", shared.Map{"type": "response.output_item.done", "output_index": outputIndex, "item": shared.PublicItem(item)})
 		outputIndex++
 	}
 	status, incomplete := responses.StatusFromFinishReason(finishReason)
 	final := s.responses.BaseResponse(payload, responseID, createdAt, status, outputItems, content, usage, incomplete)
 	s.store.SaveResponse(final, prepared.AllItems, outputItems, payload["store"] != false, prepared.ConversationID, prepared.InputItems)
-	_ = sse.Event(w, "response.completed", shared.Map{"type": "response.completed", "response": final})
+	_ = writeSSEEvent(w, "response.completed", shared.Map{"type": "response.completed", "response": final})
 	if flusher != nil {
 		flusher.Flush()
 	}
@@ -944,8 +1016,17 @@ func (s *Server) readJSON(w http.ResponseWriter, r *http.Request, optional bool)
 		return shared.Map{}, true
 	}
 	defer r.Body.Close()
-	body, err := io.ReadAll(r.Body)
+	reader := io.Reader(r.Body)
+	if s.cfg.MaxRequestBodyBytes > 0 {
+		reader = http.MaxBytesReader(w, r.Body, s.cfg.MaxRequestBodyBytes)
+	}
+	body, err := io.ReadAll(reader)
 	if err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			openAIError(w, http.StatusRequestEntityTooLarge, "Request body is too large", "invalid_request_error", "")
+			return nil, false
+		}
 		openAIError(w, http.StatusBadRequest, "Request body could not be read", "invalid_request_error", "")
 		return nil, false
 	}
@@ -1070,6 +1151,10 @@ func setSSEHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+}
+
+func writeSSEEvent(w io.Writer, event string, data any) error {
+	return sse.Event(w, event, data)
 }
 
 type debugResponseWriter struct {

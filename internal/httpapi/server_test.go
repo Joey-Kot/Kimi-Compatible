@@ -415,6 +415,75 @@ func TestDebugLogBodyLogsRedactedRequestAndResponse(t *testing.T) {
 	}
 }
 
+func TestMemoryHealthRequiresAuthAndReportsStoreStats(t *testing.T) {
+	store := state.New()
+	store.SaveConversation(shared.Map{"id": "conv_1"}, []shared.Map{{"id": "msg_1"}})
+	server := New(config.Config{
+		APITokens:    []string{"sk-test"},
+		DefaultModel: "kimi-k2.7-code",
+		ModelIDs:     []string{"kimi-k2.7-code"},
+		KimiBaseURL:  "https://api.moonshot.cn/v1",
+	}, fakeUpstream{}, store)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/healthz/memory", nil)
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = request(server, http.MethodGet, "/healthz/memory", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"goroutines"`) || !strings.Contains(rec.Body.String(), `"conversations":1`) || !strings.Contains(rec.Body.String(), `"items":1`) {
+		t.Fatalf("memory health body=%s", rec.Body.String())
+	}
+}
+
+func TestDebugPprofIsAuthenticatedAndOptIn(t *testing.T) {
+	server := testServer(fakeUpstream{})
+	rec := request(server, http.MethodGet, "/debug/pprof/", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("default pprof status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	enabled := New(config.Config{
+		APITokens:    []string{"sk-test"},
+		DefaultModel: "kimi-k2.7-code",
+		ModelIDs:     []string{"kimi-k2.7-code"},
+		KimiBaseURL:  "https://api.moonshot.cn/v1",
+		DebugPprof:   true,
+	}, fakeUpstream{}, state.New())
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/debug/vars", nil)
+	enabled.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized debug status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = request(enabled, http.MethodGet, "/debug/vars", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"alloc"`) {
+		t.Fatalf("debug vars status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestReadJSONRejectsOversizedRequestBody(t *testing.T) {
+	server := New(config.Config{
+		APITokens:           []string{"sk-test"},
+		DefaultModel:        "kimi-k2.7-code",
+		ModelIDs:            []string{"kimi-k2.7-code"},
+		KimiBaseURL:         "https://api.moonshot.cn/v1",
+		MaxRequestBodyBytes: 8,
+	}, fakeUpstream{}, state.New())
+
+	rec := request(server, http.MethodPost, "/v1/chat/completions", `{"messages":[]}`)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func request(server *Server, method, path, body string) *httptest.ResponseRecorder {
 	return requestWithHeader(server, method, path, body, "Authorization", "Bearer sk-test")
 }

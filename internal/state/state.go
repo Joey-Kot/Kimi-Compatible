@@ -20,6 +20,8 @@ import (
 type Store struct {
 	mu sync.RWMutex
 
+	limits Limits
+
 	Responses              map[string]shared.Map
 	ResponseInputItems     map[string][]shared.Map
 	ResponseContextItems   map[string][]shared.Map
@@ -28,10 +30,32 @@ type Store struct {
 	Conversations          map[string]shared.Map
 	ConversationItems      map[string][]shared.Map
 	ItemsByID              map[string]shared.Map
+
+	responseOrder       []string
+	chatCompletionOrder []string
+	conversationOrder   []string
+}
+
+type Limits struct {
+	MaxResponses       int
+	MaxChatCompletions int
+	MaxConversations   int
+}
+
+type Stats struct {
+	Responses       int `json:"responses"`
+	ChatCompletions int `json:"chat_completions"`
+	Conversations   int `json:"conversations"`
+	Items           int `json:"items"`
 }
 
 func New() *Store {
+	return NewWithLimits(Limits{})
+}
+
+func NewWithLimits(limits Limits) *Store {
 	return &Store{
+		limits:                 limits,
 		Responses:              map[string]shared.Map{},
 		ResponseInputItems:     map[string][]shared.Map{},
 		ResponseContextItems:   map[string][]shared.Map{},
@@ -40,6 +64,17 @@ func New() *Store {
 		Conversations:          map[string]shared.Map{},
 		ConversationItems:      map[string][]shared.Map{},
 		ItemsByID:              map[string]shared.Map{},
+	}
+}
+
+func (s *Store) Stats() Stats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return Stats{
+		Responses:       len(s.Responses),
+		ChatCompletions: len(s.ChatCompletions),
+		Conversations:   len(s.Conversations),
+		Items:           len(s.ItemsByID),
 	}
 }
 
@@ -83,6 +118,8 @@ func (s *Store) SaveResponse(response shared.Map, contextItems, outputItems []sh
 		s.registerItemsLocked(contextItems)
 		s.registerItemsLocked(outputItems)
 		s.Responses[responseID] = shared.CloneMap(response)
+		s.responseOrder = rememberID(s.responseOrder, responseID)
+		s.evictResponsesLocked()
 	}
 	if conversationID != "" {
 		items := s.ConversationItems[conversationID]
@@ -99,11 +136,8 @@ func (s *Store) DeleteResponse(id string) bool {
 	if _, ok := s.Responses[id]; !ok {
 		return false
 	}
-	items := append(shared.CloneSlice(s.ResponseInputItems[id]), s.ResponseContextItems[id]...)
-	delete(s.Responses, id)
-	delete(s.ResponseInputItems, id)
-	delete(s.ResponseContextItems, id)
-	s.deleteUnreferencedItemsLocked(items)
+	s.deleteResponseLocked(id)
+	s.responseOrder = forgetID(s.responseOrder, id)
 	return true
 }
 
@@ -139,6 +173,8 @@ func (s *Store) SaveChatCompletion(completion shared.Map, messages []shared.Map)
 	id := shared.StringValue(completion["id"])
 	s.ChatCompletions[id] = shared.CloneMap(completion)
 	s.ChatCompletionMessages[id] = shared.CloneSlice(messages)
+	s.chatCompletionOrder = rememberID(s.chatCompletionOrder, id)
+	s.evictChatCompletionsLocked()
 }
 
 func (s *Store) ChatCompletion(id string) (shared.Map, bool) {
@@ -197,8 +233,8 @@ func (s *Store) DeleteChatCompletion(id string) bool {
 	if _, ok := s.ChatCompletions[id]; !ok {
 		return false
 	}
-	delete(s.ChatCompletions, id)
-	delete(s.ChatCompletionMessages, id)
+	s.deleteChatCompletionLocked(id)
+	s.chatCompletionOrder = forgetID(s.chatCompletionOrder, id)
 	return true
 }
 
@@ -209,6 +245,8 @@ func (s *Store) SaveConversation(conversation shared.Map, items []shared.Map) {
 	s.Conversations[id] = shared.CloneMap(conversation)
 	s.ConversationItems[id] = shared.CloneSlice(items)
 	s.registerItemsLocked(items)
+	s.conversationOrder = rememberID(s.conversationOrder, id)
+	s.evictConversationsLocked()
 }
 
 func (s *Store) Conversation(id string) (shared.Map, bool) {
@@ -250,11 +288,68 @@ func (s *Store) DeleteConversation(id string) bool {
 	if _, ok := s.Conversations[id]; !ok {
 		return false
 	}
+	s.deleteConversationLocked(id)
+	s.conversationOrder = forgetID(s.conversationOrder, id)
+	return true
+}
+
+func (s *Store) evictResponsesLocked() {
+	if s.limits.MaxResponses <= 0 {
+		return
+	}
+	for len(s.Responses) > s.limits.MaxResponses && len(s.responseOrder) > 0 {
+		id := s.responseOrder[0]
+		s.responseOrder = s.responseOrder[1:]
+		s.deleteResponseLocked(id)
+	}
+}
+
+func (s *Store) evictChatCompletionsLocked() {
+	if s.limits.MaxChatCompletions <= 0 {
+		return
+	}
+	for len(s.ChatCompletions) > s.limits.MaxChatCompletions && len(s.chatCompletionOrder) > 0 {
+		id := s.chatCompletionOrder[0]
+		s.chatCompletionOrder = s.chatCompletionOrder[1:]
+		s.deleteChatCompletionLocked(id)
+	}
+}
+
+func (s *Store) evictConversationsLocked() {
+	if s.limits.MaxConversations <= 0 {
+		return
+	}
+	for len(s.Conversations) > s.limits.MaxConversations && len(s.conversationOrder) > 0 {
+		id := s.conversationOrder[0]
+		s.conversationOrder = s.conversationOrder[1:]
+		s.deleteConversationLocked(id)
+	}
+}
+
+func (s *Store) deleteResponseLocked(id string) {
+	if _, ok := s.Responses[id]; !ok {
+		return
+	}
+	items := append(shared.CloneSlice(s.ResponseInputItems[id]), s.ResponseContextItems[id]...)
+	delete(s.Responses, id)
+	delete(s.ResponseInputItems, id)
+	delete(s.ResponseContextItems, id)
+	s.deleteUnreferencedItemsLocked(items)
+}
+
+func (s *Store) deleteChatCompletionLocked(id string) {
+	delete(s.ChatCompletions, id)
+	delete(s.ChatCompletionMessages, id)
+}
+
+func (s *Store) deleteConversationLocked(id string) {
+	if _, ok := s.Conversations[id]; !ok {
+		return
+	}
 	items := shared.CloneSlice(s.ConversationItems[id])
 	delete(s.Conversations, id)
 	delete(s.ConversationItems, id)
 	s.deleteUnreferencedItemsLocked(items)
-	return true
 }
 
 func (s *Store) deleteUnreferencedItemsLocked(items []shared.Map) {
@@ -289,6 +384,27 @@ func (s *Store) itemReferencedLocked(id string) bool {
 		}
 	}
 	return false
+}
+
+func rememberID(order []string, id string) []string {
+	if id == "" {
+		return order
+	}
+	order = forgetID(order, id)
+	return append(order, id)
+}
+
+func forgetID(order []string, id string) []string {
+	if id == "" {
+		return order
+	}
+	for i, value := range order {
+		if value == id {
+			copy(order[i:], order[i+1:])
+			return order[:len(order)-1]
+		}
+	}
+	return order
 }
 
 func sliceHasItemID(items []shared.Map, id string) bool {

@@ -27,11 +27,26 @@ if [ "$#" -eq 0 ] || [ "${1#-}" != "$1" ]; then
   if [ -n "${KIMI_MAX_CONNS_PER_HOST:-}" ]; then
     set -- "--kimi-max-conns-per-host" "${KIMI_MAX_CONNS_PER_HOST}" "$@"
   fi
+  if [ -n "${STORE_MAX_RESPONSES:-}" ]; then
+    set -- "--store-max-responses" "${STORE_MAX_RESPONSES}" "$@"
+  fi
+  if [ -n "${STORE_MAX_CHAT_COMPLETIONS:-}" ]; then
+    set -- "--store-max-chat-completions" "${STORE_MAX_CHAT_COMPLETIONS}" "$@"
+  fi
+  if [ -n "${STORE_MAX_CONVERSATIONS:-}" ]; then
+    set -- "--store-max-conversations" "${STORE_MAX_CONVERSATIONS}" "$@"
+  fi
+  if [ -n "${MAX_REQUEST_BODY_BYTES:-}" ]; then
+    set -- "--max-request-body-bytes" "${MAX_REQUEST_BODY_BYTES}" "$@"
+  fi
   if [ -n "${READ_HEADER_TIMEOUT:-}" ]; then
     set -- "--read-header-timeout" "${READ_HEADER_TIMEOUT}" "$@"
   fi
   if [ -n "${IDLE_TIMEOUT:-}" ]; then
     set -- "--idle-timeout" "${IDLE_TIMEOUT}" "$@"
+  fi
+  if [ -n "${DEBUG_PPROF:-}" ]; then
+    set -- "--debug-pprof=${DEBUG_PPROF}" "$@"
   fi
   if [ -n "${KIMI_MODELS:-}" ]; then
     set -- "--kimi-models" "${KIMI_MODELS}" "$@"

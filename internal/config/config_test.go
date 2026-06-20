@@ -46,6 +46,18 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.KimiMaxConnsPerHost != 0 {
 		t.Fatalf("KimiMaxConnsPerHost = %d", cfg.KimiMaxConnsPerHost)
 	}
+	if cfg.StoreMaxResponses != 1000 {
+		t.Fatalf("StoreMaxResponses = %d", cfg.StoreMaxResponses)
+	}
+	if cfg.StoreMaxChatCompletions != 1000 {
+		t.Fatalf("StoreMaxChatCompletions = %d", cfg.StoreMaxChatCompletions)
+	}
+	if cfg.StoreMaxConversations != 1000 {
+		t.Fatalf("StoreMaxConversations = %d", cfg.StoreMaxConversations)
+	}
+	if cfg.MaxRequestBodyBytes != 16<<20 {
+		t.Fatalf("MaxRequestBodyBytes = %d", cfg.MaxRequestBodyBytes)
+	}
 	if cfg.ReadHeaderTimeout != 10*time.Second {
 		t.Fatalf("ReadHeaderTimeout = %s", cfg.ReadHeaderTimeout)
 	}
@@ -69,8 +81,13 @@ func TestParseCommandLineFlags(t *testing.T) {
 		"--kimi-max-idle-conns", "300",
 		"--kimi-max-idle-conns-per-host", "150",
 		"--kimi-max-conns-per-host", "80",
+		"--store-max-responses", "10",
+		"--store-max-chat-completions", "11",
+		"--store-max-conversations", "12",
+		"--max-request-body-bytes", "4096",
 		"--read-header-timeout", "3.5",
 		"--idle-timeout", "45",
+		"--debug-pprof=true",
 		"--debug-log-body=true",
 		"--verify-ssl=false",
 	})
@@ -98,13 +115,25 @@ func TestParseCommandLineFlags(t *testing.T) {
 	if cfg.KimiMaxConnsPerHost != 80 {
 		t.Fatalf("KimiMaxConnsPerHost = %d", cfg.KimiMaxConnsPerHost)
 	}
+	if cfg.StoreMaxResponses != 10 {
+		t.Fatalf("StoreMaxResponses = %d", cfg.StoreMaxResponses)
+	}
+	if cfg.StoreMaxChatCompletions != 11 {
+		t.Fatalf("StoreMaxChatCompletions = %d", cfg.StoreMaxChatCompletions)
+	}
+	if cfg.StoreMaxConversations != 12 {
+		t.Fatalf("StoreMaxConversations = %d", cfg.StoreMaxConversations)
+	}
+	if cfg.MaxRequestBodyBytes != 4096 {
+		t.Fatalf("MaxRequestBodyBytes = %d", cfg.MaxRequestBodyBytes)
+	}
 	if cfg.ReadHeaderTimeout != 3500*time.Millisecond {
 		t.Fatalf("ReadHeaderTimeout = %s", cfg.ReadHeaderTimeout)
 	}
 	if cfg.IdleTimeout != 45*time.Second {
 		t.Fatalf("IdleTimeout = %s", cfg.IdleTimeout)
 	}
-	if !cfg.DebugLogBody {
+	if !cfg.DebugPprof || !cfg.DebugLogBody {
 		t.Fatalf("boolean flags were not parsed: %#v", cfg)
 	}
 	if cfg.VerifySSL {
@@ -130,6 +159,14 @@ func TestParseRejectsNonPositiveTimeout(t *testing.T) {
 
 func TestParseRejectsInvalidConnectionLimits(t *testing.T) {
 	for _, flag := range []string{"--kimi-max-idle-conns", "--kimi-max-idle-conns-per-host", "--kimi-max-conns-per-host"} {
+		if _, err := Parse([]string{flag, "-1"}); err == nil {
+			t.Fatalf("expected error for %s", flag)
+		}
+	}
+}
+
+func TestParseRejectsInvalidMemoryLimits(t *testing.T) {
+	for _, flag := range []string{"--store-max-responses", "--store-max-chat-completions", "--store-max-conversations", "--max-request-body-bytes"} {
 		if _, err := Parse([]string{flag, "-1"}); err == nil {
 			t.Fatalf("expected error for %s", flag)
 		}

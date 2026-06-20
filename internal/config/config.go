@@ -21,6 +21,8 @@ import (
 const (
 	DefaultKimiBaseURL = "https://api.moonshot.cn/v1"
 	DefaultModel       = "kimi-k2.7-code"
+	DefaultStoreMax    = 1000
+	DefaultMaxBody     = 16 << 20
 )
 
 type Config struct {
@@ -34,8 +36,13 @@ type Config struct {
 	KimiMaxIdleConns        int
 	KimiMaxIdleConnsPerHost int
 	KimiMaxConnsPerHost     int
+	StoreMaxResponses       int
+	StoreMaxChatCompletions int
+	StoreMaxConversations   int
+	MaxRequestBodyBytes     int64
 	ReadHeaderTimeout       time.Duration
 	IdleTimeout             time.Duration
+	DebugPprof              bool
 	DebugLogBody            bool
 	VerifySSL               bool
 }
@@ -51,6 +58,10 @@ func Parse(args []string) (Config, error) {
 	cfg := Config{
 		KimiMaxIdleConns:        200,
 		KimiMaxIdleConnsPerHost: 100,
+		StoreMaxResponses:       DefaultStoreMax,
+		StoreMaxChatCompletions: DefaultStoreMax,
+		StoreMaxConversations:   DefaultStoreMax,
+		MaxRequestBodyBytes:     DefaultMaxBody,
 		VerifySSL:               true,
 	}
 
@@ -64,8 +75,13 @@ func Parse(args []string) (Config, error) {
 	fs.IntVar(&cfg.KimiMaxIdleConns, "kimi-max-idle-conns", cfg.KimiMaxIdleConns, "maximum idle upstream HTTP connections")
 	fs.IntVar(&cfg.KimiMaxIdleConnsPerHost, "kimi-max-idle-conns-per-host", cfg.KimiMaxIdleConnsPerHost, "maximum idle upstream HTTP connections per host")
 	fs.IntVar(&cfg.KimiMaxConnsPerHost, "kimi-max-conns-per-host", 0, "maximum upstream HTTP connections per host; 0 means unlimited")
+	fs.IntVar(&cfg.StoreMaxResponses, "store-max-responses", cfg.StoreMaxResponses, "maximum locally stored responses; 0 means unlimited")
+	fs.IntVar(&cfg.StoreMaxChatCompletions, "store-max-chat-completions", cfg.StoreMaxChatCompletions, "maximum locally stored chat completions; 0 means unlimited")
+	fs.IntVar(&cfg.StoreMaxConversations, "store-max-conversations", cfg.StoreMaxConversations, "maximum locally stored conversations; 0 means unlimited")
+	fs.Int64Var(&cfg.MaxRequestBodyBytes, "max-request-body-bytes", cfg.MaxRequestBodyBytes, "maximum request body size in bytes; 0 means unlimited")
 	fs.Float64Var(&readHeaderTimeoutSeconds, "read-header-timeout", 10, "local HTTP read header timeout in seconds")
 	fs.Float64Var(&idleTimeoutSeconds, "idle-timeout", 120, "local HTTP idle timeout in seconds")
+	fs.BoolVar(&cfg.DebugPprof, "debug-pprof", false, "enable authenticated /debug/pprof and /debug/vars endpoints")
 	fs.BoolVar(&cfg.DebugLogBody, "debug-log-body", false, "log redacted request/response bodies")
 	fs.BoolVar(&cfg.VerifySSL, "verify-ssl", true, "verify Kimi upstream TLS certificates")
 
@@ -97,6 +113,18 @@ func Parse(args []string) (Config, error) {
 	}
 	if cfg.KimiMaxConnsPerHost < 0 {
 		return Config{}, fmt.Errorf("--kimi-max-conns-per-host must be non-negative")
+	}
+	if cfg.StoreMaxResponses < 0 {
+		return Config{}, fmt.Errorf("--store-max-responses must be non-negative")
+	}
+	if cfg.StoreMaxChatCompletions < 0 {
+		return Config{}, fmt.Errorf("--store-max-chat-completions must be non-negative")
+	}
+	if cfg.StoreMaxConversations < 0 {
+		return Config{}, fmt.Errorf("--store-max-conversations must be non-negative")
+	}
+	if cfg.MaxRequestBodyBytes < 0 {
+		return Config{}, fmt.Errorf("--max-request-body-bytes must be non-negative")
 	}
 	if readHeaderTimeoutSeconds <= 0 {
 		return Config{}, fmt.Errorf("--read-header-timeout must be positive")

@@ -23,22 +23,35 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	cfg, err := config.Parse(os.Args[1:])
 	if err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		return 1
 	}
 	upstream := kimi.NewWithTransportConfig(cfg.KimiBaseURL, cfg.KimiAPIKey, cfg.KimiHTTPTimeout, cfg.VerifySSL, kimi.TransportConfig{
 		MaxIdleConns:        cfg.KimiMaxIdleConns,
 		MaxIdleConnsPerHost: cfg.KimiMaxIdleConnsPerHost,
 		MaxConnsPerHost:     cfg.KimiMaxConnsPerHost,
 	})
+	defer upstream.CloseIdleConnections()
 	upstream.DebugLogBody = cfg.DebugLogBody
-	handler := httpapi.New(cfg, upstream, state.New())
+	store := state.NewWithLimits(state.Limits{
+		MaxResponses:       cfg.StoreMaxResponses,
+		MaxChatCompletions: cfg.StoreMaxChatCompletions,
+		MaxConversations:   cfg.StoreMaxConversations,
+	})
+	handler := httpapi.New(cfg, upstream, store)
 	server := newHTTPServer(cfg, handler)
 	log.Printf("listening on %s", cfg.Listen)
 	if err := server.ListenAndServe(); err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		return 1
 	}
+	return 0
 }
 
 func newHTTPServer(cfg config.Config, handler http.Handler) *http.Server {

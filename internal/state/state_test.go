@@ -12,6 +12,7 @@
 package state
 
 import (
+	"fmt"
 	"testing"
 
 	"kimi-compatible/internal/adapters/openai/shared"
@@ -134,6 +135,93 @@ func TestDeleteKeepsItemsReferencedElsewhere(t *testing.T) {
 	}
 	if item, ok := store.Item("msg_shared"); ok {
 		t.Fatalf("unreferenced shared item still indexed: %#v", item)
+	}
+}
+
+func TestStoreEvictsOldResponses(t *testing.T) {
+	store := NewWithLimits(Limits{MaxResponses: 2})
+	store.SaveResponse(shared.Map{"id": "resp_1"}, []shared.Map{{"id": "msg_1"}}, nil, true, "", nil)
+	store.SaveResponse(shared.Map{"id": "resp_2"}, []shared.Map{{"id": "msg_2"}}, nil, true, "", nil)
+	store.SaveResponse(shared.Map{"id": "resp_3"}, []shared.Map{{"id": "msg_3"}}, nil, true, "", nil)
+
+	if _, ok := store.Response("resp_1"); ok {
+		t.Fatal("old response was not evicted")
+	}
+	if _, ok := store.Item("msg_1"); ok {
+		t.Fatal("evicted response item was not released")
+	}
+	for _, id := range []string{"resp_2", "resp_3"} {
+		if _, ok := store.Response(id); !ok {
+			t.Fatalf("response %s should remain", id)
+		}
+	}
+}
+
+func TestStoreEvictsOldConversations(t *testing.T) {
+	store := NewWithLimits(Limits{MaxConversations: 1})
+	store.SaveConversation(shared.Map{"id": "conv_1"}, []shared.Map{{"id": "msg_1"}})
+	store.SaveConversation(shared.Map{"id": "conv_2"}, []shared.Map{{"id": "msg_2"}})
+
+	if _, ok := store.Conversation("conv_1"); ok {
+		t.Fatal("old conversation was not evicted")
+	}
+	if _, ok := store.Item("msg_1"); ok {
+		t.Fatal("evicted conversation item was not released")
+	}
+	if _, ok := store.Conversation("conv_2"); !ok {
+		t.Fatal("new conversation should remain")
+	}
+}
+
+func TestStoreEvictionKeepsSharedItems(t *testing.T) {
+	store := NewWithLimits(Limits{MaxResponses: 1, MaxConversations: 1})
+	sharedItem := shared.Map{"id": "msg_shared"}
+	store.SaveConversation(shared.Map{"id": "conv_1"}, []shared.Map{sharedItem})
+	store.SaveResponse(shared.Map{"id": "resp_1"}, []shared.Map{sharedItem}, nil, true, "", nil)
+	store.SaveResponse(shared.Map{"id": "resp_2"}, []shared.Map{{"id": "msg_2"}}, nil, true, "", nil)
+
+	if _, ok := store.Response("resp_1"); ok {
+		t.Fatal("old response was not evicted")
+	}
+	if _, ok := store.Item("msg_shared"); !ok {
+		t.Fatal("shared item was deleted while conversation still references it")
+	}
+
+	store.SaveConversation(shared.Map{"id": "conv_2"}, nil)
+	if _, ok := store.Conversation("conv_1"); ok {
+		t.Fatal("old conversation was not evicted")
+	}
+	if item, ok := store.Item("msg_shared"); ok {
+		t.Fatalf("unreferenced shared item still indexed: %#v", item)
+	}
+}
+
+func TestStoreEvictsChatCompletions(t *testing.T) {
+	store := NewWithLimits(Limits{MaxChatCompletions: 1})
+	store.SaveChatCompletion(shared.Map{"id": "chat_1"}, []shared.Map{{"id": "msg_1"}})
+	store.SaveChatCompletion(shared.Map{"id": "chat_2"}, []shared.Map{{"id": "msg_2"}})
+
+	if _, ok := store.ChatCompletion("chat_1"); ok {
+		t.Fatal("old chat completion was not evicted")
+	}
+	if messages, ok := store.ChatCompletionMessagesFor("chat_1"); ok || messages != nil {
+		t.Fatalf("old chat completion messages remain: %#v ok=%v", messages, ok)
+	}
+	if _, ok := store.ChatCompletion("chat_2"); !ok {
+		t.Fatal("new chat completion should remain")
+	}
+}
+
+func TestStoreLimitZeroMeansUnlimited(t *testing.T) {
+	store := NewWithLimits(Limits{})
+	for i := 1; i <= 3; i++ {
+		id := fmt.Sprintf("resp_%d", i)
+		store.SaveResponse(shared.Map{"id": id}, nil, []shared.Map{{"id": fmt.Sprintf("msg_%d", i)}}, true, "", nil)
+	}
+
+	stats := store.Stats()
+	if stats.Responses != 3 || stats.Items != 3 {
+		t.Fatalf("stats = %#v", stats)
 	}
 }
 
