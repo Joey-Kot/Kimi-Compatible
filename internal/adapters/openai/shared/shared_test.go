@@ -26,6 +26,18 @@ func TestCloneMapReturnsIndependentCopy(t *testing.T) {
 	}
 }
 
+func TestCloneMapPreservesJSONNumber(t *testing.T) {
+	original := Map{"n": json.Number("8"), "items": []any{Map{"x": json.Number("0.2")}}}
+	cloned := CloneMap(original)
+	if cloned["n"] != json.Number("8") {
+		t.Fatalf("number changed: %#v", cloned["n"])
+	}
+	nested := cloned["items"].([]any)[0].(map[string]any)
+	if nested["x"] != json.Number("0.2") {
+		t.Fatalf("nested number changed: %#v", nested["x"])
+	}
+}
+
 func TestContentToTextHandlesStringsAndParts(t *testing.T) {
 	content := []any{
 		map[string]any{"type": "input_text", "text": "hello "},

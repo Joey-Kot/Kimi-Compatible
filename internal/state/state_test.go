@@ -123,6 +123,9 @@ func TestDeleteKeepsItemsReferencedElsewhere(t *testing.T) {
 	sharedItem := shared.Map{"id": "msg_shared"}
 	store.SaveConversation(shared.Map{"id": "conv_1"}, []shared.Map{sharedItem})
 	store.SaveResponse(shared.Map{"id": "resp_1"}, []shared.Map{sharedItem}, nil, true, "", nil)
+	if got := store.itemRefCount["msg_shared"]; got != 3 {
+		t.Fatalf("ref count = %d", got)
+	}
 
 	if !store.DeleteResponse("resp_1") {
 		t.Fatal("delete response failed")
@@ -130,11 +133,33 @@ func TestDeleteKeepsItemsReferencedElsewhere(t *testing.T) {
 	if _, ok := store.Item("msg_shared"); !ok {
 		t.Fatal("shared item was deleted while conversation still references it")
 	}
+	if got := store.itemRefCount["msg_shared"]; got != 1 {
+		t.Fatalf("ref count after response delete = %d", got)
+	}
 	if !store.DeleteConversation("conv_1") {
 		t.Fatal("delete conversation failed")
 	}
 	if item, ok := store.Item("msg_shared"); ok {
 		t.Fatalf("unreferenced shared item still indexed: %#v", item)
+	}
+	if got := store.itemRefCount["msg_shared"]; got != 0 {
+		t.Fatalf("ref count after all deletes = %d", got)
+	}
+}
+
+func TestStoreReplacesConversationRefs(t *testing.T) {
+	store := New()
+	store.SaveConversation(shared.Map{"id": "conv_1"}, []shared.Map{{"id": "msg_old"}})
+	store.SaveConversation(shared.Map{"id": "conv_1"}, []shared.Map{{"id": "msg_new"}})
+
+	if _, ok := store.Item("msg_old"); ok {
+		t.Fatal("replaced conversation kept old item")
+	}
+	if _, ok := store.Item("msg_new"); !ok {
+		t.Fatal("replaced conversation did not keep new item")
+	}
+	if got := store.itemRefCount["msg_new"]; got != 1 {
+		t.Fatalf("new item ref count = %d", got)
 	}
 }
 

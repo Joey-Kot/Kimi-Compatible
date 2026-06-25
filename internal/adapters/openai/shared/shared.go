@@ -44,26 +44,43 @@ func CloneMap(value Map) Map {
 	if value == nil {
 		return nil
 	}
-	var out Map
-	_ = remarshal(value, &out)
-	return out
+	return cloneAny(value).(map[string]any)
 }
 
 func CloneSlice(value []Map) []Map {
 	if value == nil {
 		return nil
 	}
-	var out []Map
-	_ = remarshal(value, &out)
+	out := make([]Map, len(value))
+	for i, item := range value {
+		out[i] = CloneMap(item)
+	}
 	return out
 }
 
-func remarshal(in any, out any) error {
-	data, err := json.Marshal(in)
-	if err != nil {
-		return err
+func cloneAny(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[key] = cloneAny(item)
+		}
+		return out
+	case []Map:
+		out := make([]Map, len(v))
+		for i, item := range v {
+			out[i] = CloneMap(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = cloneAny(item)
+		}
+		return out
+	default:
+		return v
 	}
-	return json.Unmarshal(data, out)
 }
 
 func AsMap(value any) (Map, bool) {

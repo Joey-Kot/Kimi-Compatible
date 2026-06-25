@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -466,6 +467,63 @@ func TestDebugPprofIsAuthenticatedAndOptIn(t *testing.T) {
 	rec = request(enabled, http.MethodGet, "/debug/vars", "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"alloc"`) {
 		t.Fatalf("debug vars status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestReadJSONRejectsTrailingContent(t *testing.T) {
+	server := testServer(fakeUpstream{})
+
+	rec := request(server, http.MethodPost, "/v1/chat/completions", `{"model":"kimi-k2.7-code","messages":[]} trailing`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "single JSON object") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestReadJSONAllowsTrailingWhitespace(t *testing.T) {
+	server := testServer(fakeUpstream{chatFn: func(payload shared.Map) (shared.Map, error) {
+		return shared.Map{
+			"id":      "chat_1",
+			"model":   payload["model"],
+			"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]any{"role": "assistant", "content": "ok"}}},
+		}, nil
+	}})
+
+	rec := request(server, http.MethodPost, "/v1/chat/completions", "{\"model\":\"kimi-k2.7-code\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]} \n\t")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestInvalidBearerTokenIsRejected(t *testing.T) {
+	server := testServer(fakeUpstream{})
+	rec := requestWithHeader(server, http.MethodGet, "/v1/models", "", "Authorization", "Bearer wrong")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMethodNotAllowed(t *testing.T) {
+	server := testServer(fakeUpstream{})
+	rec := request(server, http.MethodPut, "/v1/responses", "")
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStreamChatCompletionWritesUpstreamError(t *testing.T) {
+	server := testServer(fakeUpstream{streamFn: func(payload shared.Map, handle func(shared.Map) error) error {
+		return errors.New("upstream failed")
+	}})
+	body := `{"model":"kimi-k2.7-code","messages":[{"role":"user","content":"Hello"}],"stream":true}`
+	rec := request(server, http.MethodPost, "/v1/chat/completions", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "upstream failed") || !strings.Contains(rec.Body.String(), "server_error") {
+		t.Fatalf("stream body=%s", rec.Body.String())
 	}
 }
 

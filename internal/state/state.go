@@ -34,6 +34,7 @@ type Store struct {
 	responseOrder       []string
 	chatCompletionOrder []string
 	conversationOrder   []string
+	itemRefCount        map[string]int
 }
 
 type Limits struct {
@@ -64,6 +65,7 @@ func NewWithLimits(limits Limits) *Store {
 		Conversations:          map[string]shared.Map{},
 		ConversationItems:      map[string][]shared.Map{},
 		ItemsByID:              map[string]shared.Map{},
+		itemRefCount:           map[string]int{},
 	}
 }
 
@@ -82,6 +84,7 @@ func (s *Store) RegisterItems(items []shared.Map) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.registerItemsLocked(items)
+	s.addItemRefsLocked(items)
 }
 
 func (s *Store) registerItemsLocked(items []shared.Map) {
@@ -112,21 +115,25 @@ func (s *Store) SaveResponse(response shared.Map, contextItems, outputItems []sh
 	defer s.mu.Unlock()
 	responseID := shared.StringValue(response["id"])
 	if store {
+		s.deleteResponseLocked(responseID)
 		full := append(shared.CloneSlice(contextItems), shared.CloneSlice(outputItems)...)
+		input := shared.CloneSlice(contextItems)
 		s.ResponseContextItems[responseID] = full
-		s.ResponseInputItems[responseID] = shared.CloneSlice(contextItems)
-		s.registerItemsLocked(contextItems)
-		s.registerItemsLocked(outputItems)
+		s.ResponseInputItems[responseID] = input
+		s.registerItemsLocked(full)
+		s.addItemRefsLocked(full)
+		s.addItemRefsLocked(input)
 		s.Responses[responseID] = shared.CloneMap(response)
 		s.responseOrder = rememberID(s.responseOrder, responseID)
 		s.evictResponsesLocked()
 	}
 	if conversationID != "" {
+		newItems := append(shared.CloneSlice(currentInputItems), shared.CloneSlice(outputItems)...)
 		items := s.ConversationItems[conversationID]
-		items = append(items, shared.CloneSlice(currentInputItems)...)
-		items = append(items, shared.CloneSlice(outputItems)...)
+		items = append(items, newItems...)
 		s.ConversationItems[conversationID] = items
-		s.registerItemsLocked(items)
+		s.registerItemsLocked(newItems)
+		s.addItemRefsLocked(newItems)
 	}
 }
 
@@ -242,9 +249,11 @@ func (s *Store) SaveConversation(conversation shared.Map, items []shared.Map) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id := shared.StringValue(conversation["id"])
+	s.deleteConversationLocked(id)
 	s.Conversations[id] = shared.CloneMap(conversation)
 	s.ConversationItems[id] = shared.CloneSlice(items)
 	s.registerItemsLocked(items)
+	s.addItemRefsLocked(items)
 	s.conversationOrder = rememberID(s.conversationOrder, id)
 	s.evictConversationsLocked()
 }
@@ -330,11 +339,13 @@ func (s *Store) deleteResponseLocked(id string) {
 	if _, ok := s.Responses[id]; !ok {
 		return
 	}
-	items := append(shared.CloneSlice(s.ResponseInputItems[id]), s.ResponseContextItems[id]...)
+	inputItems := shared.CloneSlice(s.ResponseInputItems[id])
+	contextItems := shared.CloneSlice(s.ResponseContextItems[id])
 	delete(s.Responses, id)
 	delete(s.ResponseInputItems, id)
 	delete(s.ResponseContextItems, id)
-	s.deleteUnreferencedItemsLocked(items)
+	s.releaseItemRefsLocked(inputItems)
+	s.releaseItemRefsLocked(contextItems)
 }
 
 func (s *Store) deleteChatCompletionLocked(id string) {
@@ -349,10 +360,10 @@ func (s *Store) deleteConversationLocked(id string) {
 	items := shared.CloneSlice(s.ConversationItems[id])
 	delete(s.Conversations, id)
 	delete(s.ConversationItems, id)
-	s.deleteUnreferencedItemsLocked(items)
+	s.releaseItemRefsLocked(items)
 }
 
-func (s *Store) deleteUnreferencedItemsLocked(items []shared.Map) {
+func (s *Store) addItemRefsLocked(items []shared.Map) {
 	seen := map[string]bool{}
 	for _, item := range items {
 		id := shared.StringValue(item["id"])
@@ -360,30 +371,25 @@ func (s *Store) deleteUnreferencedItemsLocked(items []shared.Map) {
 			continue
 		}
 		seen[id] = true
-		if s.itemReferencedLocked(id) {
-			continue
-		}
-		delete(s.ItemsByID, id)
+		s.itemRefCount[id]++
 	}
 }
 
-func (s *Store) itemReferencedLocked(id string) bool {
-	for _, items := range s.ResponseInputItems {
-		if sliceHasItemID(items, id) {
-			return true
+func (s *Store) releaseItemRefsLocked(items []shared.Map) {
+	seen := map[string]bool{}
+	for _, item := range items {
+		id := shared.StringValue(item["id"])
+		if id == "" || seen[id] {
+			continue
 		}
-	}
-	for _, items := range s.ResponseContextItems {
-		if sliceHasItemID(items, id) {
-			return true
+		seen[id] = true
+		if s.itemRefCount[id] <= 1 {
+			delete(s.itemRefCount, id)
+			delete(s.ItemsByID, id)
+			continue
 		}
+		s.itemRefCount[id]--
 	}
-	for _, items := range s.ConversationItems {
-		if sliceHasItemID(items, id) {
-			return true
-		}
-	}
-	return false
 }
 
 func rememberID(order []string, id string) []string {
@@ -405,15 +411,6 @@ func forgetID(order []string, id string) []string {
 		}
 	}
 	return order
-}
-
-func sliceHasItemID(items []shared.Map, id string) bool {
-	for _, item := range items {
-		if shared.StringValue(item["id"]) == id {
-			return true
-		}
-	}
-	return false
 }
 
 func matchesMetadata(item shared.Map, filters map[string]string) bool {
