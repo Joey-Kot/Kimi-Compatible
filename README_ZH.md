@@ -54,8 +54,13 @@ docker run -itd \
 | `KIMI_MAX_IDLE_CONNS` | `--kimi-max-idle-conns` |
 | `KIMI_MAX_IDLE_CONNS_PER_HOST` | `--kimi-max-idle-conns-per-host` |
 | `KIMI_MAX_CONNS_PER_HOST` | `--kimi-max-conns-per-host` |
+| `STORE_MAX_RESPONSES` | `--store-max-responses` |
+| `STORE_MAX_CHAT_COMPLETIONS` | `--store-max-chat-completions` |
+| `STORE_MAX_CONVERSATIONS` | `--store-max-conversations` |
+| `MAX_REQUEST_BODY_BYTES` | `--max-request-body-bytes` |
 | `READ_HEADER_TIMEOUT` | `--read-header-timeout` |
 | `IDLE_TIMEOUT` | `--idle-timeout` |
+| `DEBUG_PPROF` | `--debug-pprof` |
 | `VERIFY_SSL` | `--verify-ssl` |
 | `DEBUG_LOG_BODY` | `--debug-log-body` |
 

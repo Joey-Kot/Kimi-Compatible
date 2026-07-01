@@ -13,6 +13,7 @@ package main
 
 import (
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -22,6 +23,18 @@ import (
 func TestEntrypointPackageBuilds(t *testing.T) {
 	// Server startup is exercised by building cmd/server; runtime behavior is
 	// covered through internal/httpapi and internal/config tests.
+}
+
+func TestRunHelpExitsSuccessfully(t *testing.T) {
+	oldArgs := os.Args
+	os.Args = []string{"kimi-compatible", "--help"}
+	defer func() {
+		os.Args = oldArgs
+	}()
+
+	if code := run(); code != 0 {
+		t.Fatalf("run() = %d", code)
+	}
 }
 
 func TestNewHTTPServerUsesConfiguredTimeouts(t *testing.T) {

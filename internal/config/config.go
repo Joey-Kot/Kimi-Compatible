@@ -14,6 +14,7 @@ package config
 import (
 	"flag"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -49,6 +50,9 @@ type Config struct {
 
 func Parse(args []string) (Config, error) {
 	fs := flag.NewFlagSet("kimi-compatible", flag.ContinueOnError)
+	fs.Usage = func() {
+		usage(fs.Output())
+	}
 
 	var apiTokenCSV string
 	var modelCSV string
@@ -136,6 +140,70 @@ func Parse(args []string) (Config, error) {
 	cfg.ReadHeaderTimeout = time.Duration(readHeaderTimeoutSeconds * float64(time.Second))
 	cfg.IdleTimeout = time.Duration(idleTimeoutSeconds * float64(time.Second))
 	return cfg, nil
+}
+
+func usage(w io.Writer) {
+	fmt.Fprint(w, `Usage:
+  kimi-compatible [flags]
+
+Example:
+  kimi-compatible --listen :8080 --api-token sk-local-test --kimi-api-key sk-your-kimi-key
+
+Flags:
+  --api-token string
+      comma-separated local bearer token list
+  --debug-log-body
+      log redacted request/response bodies (default false)
+  --debug-pprof
+      enable authenticated /debug/pprof/ and /debug/vars endpoints (default false)
+  --idle-timeout float
+      local HTTP idle timeout in seconds (default 120)
+  --kimi-api-key string
+      Kimi upstream API key
+  --kimi-base-url string
+      Kimi upstream base URL (default https://api.moonshot.cn/v1)
+  --kimi-http-timeout float
+      Kimi HTTP timeout in seconds (default 120)
+  --kimi-max-conns-per-host int
+      maximum upstream HTTP connections per host; 0 means unlimited (default 0)
+  --kimi-max-idle-conns int
+      maximum idle upstream HTTP connections (default 200)
+  --kimi-max-idle-conns-per-host int
+      maximum idle upstream HTTP connections per host (default 100)
+  --kimi-model string
+      default Kimi model (default kimi-k2.7-code)
+  --kimi-models string
+      comma-separated model IDs exposed by /v1/models
+  --listen string
+      HTTP listen address (default :8080)
+  --max-request-body-bytes int
+      maximum local request body size in bytes; 0 means unlimited (default 16777216)
+  --read-header-timeout float
+      local HTTP read header timeout in seconds (default 10)
+  --store-max-chat-completions int
+      maximum locally stored Chat Completions; 0 means unlimited (default 1000)
+  --store-max-conversations int
+      maximum locally stored Conversations; 0 means unlimited (default 1000)
+  --store-max-responses int
+      maximum locally stored Responses; 0 means unlimited (default 1000)
+  --verify-ssl
+      verify Kimi upstream TLS certificates (default true)
+
+Container deployment:
+  docker-entrypoint.sh maps environment variables to the same flags. See docker.env.example.
+
+Compatible APIs:
+  Kimi Chat Completions:     POST /kimi/v1/chat/completions
+  Kimi Token Estimation:     POST /v1/tokenizers/estimate-token-count
+  OpenAI Chat Completions:   /v1/chat/completions
+  OpenAI Responses:          /v1/responses
+  OpenAI Conversations:      /v1/conversations
+  Anthropic Messages:        /v1/messages
+  Gemini Generate Content:   /v1beta/models/{model}:generateContent, /v1/models/{model}:generateContent
+  Gemini Streaming:          /v1beta/models/{model}:streamGenerateContent, /v1/models/{model}:streamGenerateContent
+  Gemini Token Counting:     /v1beta/models/{model}:countTokens, /v1/models/{model}:countTokens
+  Common endpoints:          /v1/models, /health, /healthz/memory
+`)
 }
 
 func splitCSV(value string) []string {

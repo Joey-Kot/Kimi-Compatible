@@ -12,6 +12,7 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -29,6 +30,9 @@ func main() {
 func run() int {
 	cfg, err := config.Parse(os.Args[1:])
 	if err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
 		log.Print(err)
 		return 1
 	}

@@ -13,6 +13,7 @@ package config
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -177,6 +178,28 @@ func TestParseRejectsNonPositiveServerTimeouts(t *testing.T) {
 	for _, flag := range []string{"--read-header-timeout", "--idle-timeout"} {
 		if _, err := Parse([]string{flag, "0"}); err == nil {
 			t.Fatalf("expected error for %s", flag)
+		}
+	}
+}
+
+func TestUsageDocumentsCurrentFlagsAndEndpoints(t *testing.T) {
+	var b strings.Builder
+	usage(&b)
+	text := b.String()
+	for _, want := range []string{
+		"Usage:\n  kimi-compatible [flags]",
+		"--kimi-api-key string",
+		"--kimi-base-url string\n      Kimi upstream base URL (default https://api.moonshot.cn/v1)",
+		"--store-max-chat-completions int",
+		"--max-request-body-bytes int",
+		"docker-entrypoint.sh maps environment variables to the same flags",
+		"Kimi Chat Completions:     POST /kimi/v1/chat/completions",
+		"OpenAI Responses:          /v1/responses",
+		"Gemini Token Counting:     /v1beta/models/{model}:countTokens, /v1/models/{model}:countTokens",
+		"Common endpoints:          /v1/models, /health, /healthz/memory",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("usage() missing %q\n%s", want, text)
 		}
 	}
 }
